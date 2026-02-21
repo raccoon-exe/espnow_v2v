@@ -22,15 +22,15 @@ typedef struct __attribute__((packed))
 static void whenDataIsRecieved(const uint8_t *mac, const uint8_t *incomingData, int len)
 {
     // 1) validating expected size
-    if (len != (int)sizeof(TelemetryPacket))
+    if (len != (int)sizeof(telemetryPacket))
     {
-        Serial.printf("RX Wrong size: %d (expected %d)\n", len, (int)sizeof(TelemetryPacket));
+        Serial.printf("RX Wrong size: %d (expected %d)\n", len, (int)sizeof(telemetryPacket));
         return;
     }
 
     // 2) copying bytes into a struct instance (safe cause we verified length)
-    TelemetryPacket packet;
-    memcpy(&packet, incomingData, sizeof(TelemetryPacket));
+    telemetryPacket packet;
+    memcpy(&packet, incomingData, sizeof(telemetryPacket));
 
     // 3) print who sent it (MAC) + decoded fields
     Serial.printf("Recieved from MAC: %02X:%02X:%02X:%02X:%02X:%02X | ", 
@@ -65,7 +65,7 @@ void setup()
     Serial.println(WiFi.macAddress());
 
     Serial.println("Waiting for telemetry from UAV...");
-    Serial.printf("Expected Package Size: %d bytes\n", (int)sizeof(TelemetryPacket));
+    Serial.printf("Expected Package Size: %d bytes\n", (int)sizeof(telemetryPacket));
 
 }
 
