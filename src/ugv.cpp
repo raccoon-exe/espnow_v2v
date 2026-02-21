@@ -53,7 +53,7 @@ void setup()
 
     WiFi.mode(WIFI_STA); //setting wifi in station mode //putting wifi radio in station mode which is required for espnow. we are not connecting to any router here. this enables STA interface
 
-    if (esp_now_init != ESP_OK)
+    if (esp_now_init() != ESP_OK)
     {
         Serial.println("ESP-NOW init Failed");
         while(true) delay(1000);
