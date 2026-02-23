@@ -69,7 +69,7 @@ typedef struct __attribute__((packed))
   float velocity_y; //simulated velocity y
   bool markerDetected; //marker detected by uav // flag
   bool emergencyStop; //emergency stop flag
-  uint8_t lastCommandRecieved; //echo last command ID we recieved (debugging/tracing back if any issue)
+  uint8_t lastCommandAck; //echo last command ID we recieved (debugging/tracing back if any issue)
 /*
 UGV: "UAV, this is Base. Command #5: Change altitude to 10 meters. Over."
 UAV: "Base, this is UAV. Copy Command #5. I am now at 10 meters. Over." (This is the Echo). The UGV hears the Echo and thinks: "Good, they definitely heard me."
@@ -215,7 +215,7 @@ void loop()
   newTelemetryPacket.markerDetected = ((newTelemetryPacket.sequence /10) % 2) == 1; // setting marker detected to true or false
   
   newTelemetryPacket.emergencyStop = global_emergencyStop; // setting emergency stop to true or false
-  newTelemetryPacket.lastCommandRecieved = global_lastCommand;
+  newTelemetryPacket.lastCommandAck = global_lastCommand;
 
   // sending the telemetry packet to the UGV
   esp_err_t result = esp_now_send(UGV_MAC, (const uint8_t *)&newTelemetryPacket, sizeof(newTelemetryPacket));
