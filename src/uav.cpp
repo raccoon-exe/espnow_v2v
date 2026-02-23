@@ -5,17 +5,56 @@
 // mac address of esp32_1 = F8:B3:B7:20:25:A8
 // mac address of esp32_2 = F8:B3:B7:20:69:C0
 
+// UAV sends telemetry to UGV and recieves commands from UGV
+// UGV receives telemetry from UAV and sends commands to UAV
+
+
 // giving the uav the mac adress of UGV as raw bytes
 // so the ESP-NOW targets devices by MAC address (no Ip, no router, no wifi network)
 // so we need to manually add the peer (UGV) to the ESP-NOW network
 // this is done using esp_now_add_peer()
-uint8_t UGV_MAC[] = {0xF8, 0xB3, 0xB7, 0x20, 0x69, 0xC0}; //mac address of UGV as raw bytes
+uint8_t UGV_MAC[] = {0xF8, 0xB3, 0xB7, 0x20, 0x69, 0xC0}; //mac address of UGV (reciver/commander)
+
+/*
+// adding the message type now
+// as esp-now is a peer to peer communication protocol, both devices must add each other as a peer
+// each device runs: a send loop (perodicoliclyy)
+// each device runs: a recieve loop (perodicically)
+
+//two different struct packet types: telemetry and command
+// telemetry packet is sent from uav to ugv
+// command packet is sent from ugv to uav
+
+// for this i am using basic protocol concept: message type + fixed c struct packet
+
+so i will define a 1 byte message type at the front of every packet 
+like 
+message_telemetry = 1
+message_command = 2
+
+that way, reciever can do
+- if type == 1 then decode telemetry packet
+- if type == 2 then decode command packet
+
+*/
+// so here is the message types part
+enum : uint8_t
+{
+  message_telemetry = 1,
+  message_command = 2
+};
 
 // making the c struct packet definition for the telemetry data! this MUST always be same as the one i have in UGV to work!
 // cause its like the struct packet blueprint is sent, binary layout must match exactly. 
 // so the compiler doesnt add any padding bytes between fields for alignment purposes
+
+/*
+now every packet will start with "type" so we can tell what struct it is (uint8_t = 8 bits = 1 byte)
+then the rest of the packet will be the struct packet
+*/
 typedef struct __attribute__((packed))
 {
+  // message  _type
   //sequence
   // timestamp_ms
   // velocity_x
@@ -23,28 +62,97 @@ typedef struct __attribute__((packed))
   // markerDetected
   // emergencyStop
   // cmd
-  uint32_t sequence;
-  uint32_t timestamp_ms;
-  float velocity_x;
-  float velocity_y;
-  bool markerDetected;
-  bool emergencyStop;
-  uint8_t cmd;
-} telemetryPacket;
+  uint8_t type;  // message_telemetry  
+  uint32_t sequence; //sequence number increments every packet
+  uint32_t timestamp_ms; //sender timestamp in milliseconds
+  float velocity_x; //simulated velocity x
+  float velocity_y; //simulated velocity y
+  bool markerDetected; //marker detected by uav // flag
+  bool emergencyStop; //emergency stop flag
+  uint8_t lastCommandRecieved; //echo last command ID we recieved (debugging/tracing back if any issue)
+/*
+UGV: "UAV, this is Base. Command #5: Change altitude to 10 meters. Over."
+UAV: "Base, this is UAV. Copy Command #5. I am now at 10 meters. Over." (This is the Echo). The UGV hears the Echo and thinks: "Good, they definitely heard me."
+*/
+} telemetryPacket; // *the telemetryPacket in UAV.cpp is what the UAV packs (sends to UGV)
 
-static uint32_t g_sequence = 0;
+typedef struct __attribute__((packed))
+{
+  // message _command
+  // command sequence
+  // command // like command code (0 none,  1 arm,  2 disarm,  3 land , 4 emergency stop)
+  // emergency stop // if trrue then UAV goes into failsafe state
+  uint8_t type; // message_command
+  uint32_t command_sequence; // copmmand ssequence
+  uint8_t command; // command code (0 none,  1 arm,  2 disarm,  3 land , 4 emergency stop)
+  bool emergencyStop; // emergency stop flag
+} commandPacket; // *the commandPacket in UAV.cpp is what the UAV unpacks (recieves from UGV)
 
+// all the states
+static uint32_t global_sequence = 0;
+
+// land drone when global emergency stop is true
+static volatile bool global_emergencyStop = false; // this will be set to true when the UGV sends an emergency stop command // updated when commands arrive
+
+//Remembers the actual instruction (e.g., "Land")
+static volatile uint8_t global_lastCommand = 0; // last command ID value we recieved (debugging/tracing back if any issue)
+
+// Remembers which specific message that instruction came from.
+static uint32_t global_lastCommandSequence = 0; // for printing and tracing back if any issue (veritifcaiton purpose_)
+
+//callback/interrrupt function
 // this callback runs after a send attempt finishes
 // it tells us whether the radio reported success or failure
+// SEND CALLBACK
 static void checkDeliveryStatus (const uint8_t *mac, esp_now_send_status_t status)
 {
   // mac = the mac address of the device we tried to send to
   // status = ESP_NOW_SEND_SUCCESS or ESP_NOW_SEND_FAIL
-  // printing the mac address of the device we tried to send to
+  /*
   Serial.printf("Sending to MAC: %02X:%02X:%02X:%02X:%02X:%02X | ", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
   if (status == ESP_NOW_SEND_SUCCESS) 
   Serial.println("Success");
   else Serial.println("Fail");
+  */
+  Serial.printf("(UAV TX) Sending to UGV -> %s\n", (status == ESP_NOW_SEND_SUCCESS) ? "OK" : "FAIL");
+}
+
+// RECIEVE CALLBACK
+static void whenDataIsRecieved(const uint8_t *mac, const uint8_t *incomingData, int len)
+{
+  // first: basic sanity check
+  if (len < 1) return; // if the radio glitches and sends a packet of size 0, we ignore it
+
+  // the first byte is the message type
+  uint8_t type = incomingData[0];
+
+  // second: copy bytes into a struct instance (safe cause we verified length)
+  if (type == message_command)
+  {
+    if (len != (int)sizeof(commandPacket))
+    {
+      Serial.printf("UAV RX Command wrong size: %d (expected %d)\n", len, (int)sizeof(commandPacket));
+      return;
+    }
+
+    commandPacket newCmdPacket;
+    memcpy(&newCmdPacket, incomingData, sizeof(newCmdPacket));
+
+    // update state based on command
+    global_emergencyStop = newCmdPacket.emergencyStop;
+    global_lastCommand = newCmdPacket.command;
+    global_lastCommandSequence = newCmdPacket.command_sequence;
+
+    // printing what it got
+    Serial.printf("(UAV RX) Recieved Command from UGV -> MAC: %02X:%02X:%02X:%02X:%02X:%02X | cmdSeq: %u | Cmd: %d | EmStop: %d\n",
+    mac[0], mac[1], mac[2], mac[3], mac[4], mac[5],
+    (unsigned long)newCmdPacket.command_sequence,
+    newCmdPacket.command,
+    newCmdPacket.emergencyStop ? 1 : 0);
+    return;
+  }
+  // for now if it gets any other type, ignores it for now
+  Serial.printf("UAV Recieved unknown type = %u len = %d\n", type, len);
 }
 
 void setup()
@@ -64,6 +172,8 @@ void setup()
   //now register the callback function so we can see if each send is successful or not
   esp_now_register_send_cb(checkDeliveryStatus);
 
+  esp_now_register_recv_cb(whenDataIsRecieved);
+
   // now we must add the reciever as a peer in the espnow before sendding.
   // a peer is basically a known MAC address target that ESPNow can send to. aka SSN of that target ESP32 (UGV)
   esp_now_peer_info_t peerInfo = {}; // Initialize with default values
@@ -81,36 +191,39 @@ void setup()
     return;
   }
   
-  Serial.print("Sender ready. My MAC is: ");
+  Serial.print("UAV ready. My MAC is: ");
   Serial.println(WiFi.macAddress());
+
+  Serial.printf("TelemetryPacket size: %d bytes\n", (int)sizeof(telemetryPacket));
+  Serial.printf("CommandPacket size: %d bytes\n", (int)sizeof(commandPacket));
 }
 
 void loop()
 {
-  telemetryPacket packet;
+  telemetryPacket newTelemetryPacket;
   
   //after creating the form named packet, we fill it with data
-  packet.sequence = g_sequence++; // incrementing the sequence number
-  packet.timestamp_ms = millis(); // getting the current time in milliseconds (sender timestamp)
-  packet.velocity_x = 1.0f + 0.1f * (packet.sequence % 20); // setting velocity x to 1.0 + 0.1 * (sequence % 20)
-  packet.velocity_y = 1.0f + 0.1f * (packet.sequence % 20); // setting velocity y to 1.0 + 0.1 * (sequence % 20
+  newTelemetryPacket.type = message_telemetry;
+  
+  newTelemetryPacket.sequence = global_sequence++; // incrementing the sequence number
+  newTelemetryPacket.timestamp_ms = millis(); // getting the current time in milliseconds (sender timestamp)
+  
+  //test velocity that changes over time
+  newTelemetryPacket.velocity_x = 1.0f + 0.1f * (newTelemetryPacket.sequence % 20); // setting velocity x to 1.0 + 0.1 * (sequence % 20)
+  newTelemetryPacket.velocity_y = 1.0f + 0.1f * (newTelemetryPacket.sequence % 20); // setting velocity y to 1.0 + 0.1 * (sequence % 20
 
-  packet.markerDetected = ((packet.sequence /10) % 2) == 1; // setting marker detected to true or false
-  packet.emergencyStop = (packet.sequence % 50) == 0; // setting emergency stop to true or false
-  packet.cmd = 0; // setting command to 0
+  newTelemetryPacket.markerDetected = ((newTelemetryPacket.sequence /10) % 2) == 1; // setting marker detected to true or false
+  
+  newTelemetryPacket.emergencyStop = global_emergencyStop; // setting emergency stop to true or false
+  newTelemetryPacket.lastCommandRecieved = global_lastCommand;
 
-  // sending the raw bytes of the struct packet to the UGV
-  esp_err_t result = esp_now_send(UGV_MAC, (const uint8_t *)&packet, sizeof(packet));
+  // sending the telemetry packet to the UGV
+  esp_err_t result = esp_now_send(UGV_MAC, (const uint8_t *)&newTelemetryPacket, sizeof(newTelemetryPacket));
 
-  if (result == ESP_OK)
-  {
-    Serial.println("Sent successfully");
-  }
-  else
-  {
-    Serial.println("Error sending");
-  }
-  delay(200); // 5 HZ for now (every 200 ms)
+  Serial.printf("UAV send telemetry result=%d seq=%lu (lastCmdSeq=%lu)\n",
+    (int)result, (unsigned long)newTelemetryPacket.sequence, (unsigned long)global_lastCommandSequence);
+    
+    delay (1000); // sending every 1 second
 }
 
 
