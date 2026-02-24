@@ -95,7 +95,7 @@ static uint32_t global_sequence = 0;
 static volatile bool global_emergencyStop = false; // this will be set to true when the UGV sends an emergency stop command // updated when commands arrive
 
 //Remembers the actual instruction (e.g., "Land")
-static volatile uint8_t global_lastCommand = 0; // last command ID value we recieved (debugging/tracing back if any issue)
+static volatile uint8_t global_lastCommandAck = 0; // last command ID value we recieved (debugging/tracing back if any issue)
 
 // Remembers which specific message that instruction came from.
 static uint32_t global_lastCommandSequence = 0; // for printing and tracing back if any issue (veritifcaiton purpose_)
@@ -140,7 +140,7 @@ static void whenDataIsRecieved(const uint8_t *mac, const uint8_t *incomingData, 
 
     // update state based on command
     global_emergencyStop = newCmdPacket.emergencyStop;
-    global_lastCommand = newCmdPacket.command;
+    global_lastCommandAck = newCmdPacket.command;
     global_lastCommandSequence = newCmdPacket.command_sequence;
 
     // printing what it got
@@ -170,9 +170,9 @@ void setup()
   }
 
   //now register the callback function so we can see if each send is successful or not
-  esp_now_register_send_cb(checkDeliveryStatus);
+  esp_now_register_send_cb(checkDeliveryStatus); //onsent callback
 
-  esp_now_register_recv_cb(whenDataIsRecieved);
+  esp_now_register_recv_cb(whenDataIsRecieved); //onreceive callback
 
   // now we must add the reciever as a peer in the espnow before sendding.
   // a peer is basically a known MAC address target that ESPNow can send to. aka SSN of that target ESP32 (UGV)
@@ -215,7 +215,7 @@ void loop()
   newTelemetryPacket.markerDetected = ((newTelemetryPacket.sequence /10) % 2) == 1; // setting marker detected to true or false
   
   newTelemetryPacket.emergencyStop = global_emergencyStop; // setting emergency stop to true or false
-  newTelemetryPacket.lastCommandAck = global_lastCommand;
+  newTelemetryPacket.lastCommandAck = global_lastCommandAck;
 
   // sending the telemetry packet to the UGV
   esp_err_t result = esp_now_send(UGV_MAC, (const uint8_t *)&newTelemetryPacket, sizeof(newTelemetryPacket));
@@ -223,7 +223,7 @@ void loop()
   Serial.printf("UAV send telemetry result=%d seq=%lu (lastCmdSeq=%lu)\n",
     (int)result, (unsigned long)newTelemetryPacket.sequence, (unsigned long)global_lastCommandSequence);
     
-    delay (1000); // sending every 1 second
+    delay (5000); // sending every 1 second
 }
 
 
